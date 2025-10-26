@@ -89,7 +89,7 @@ jobs:
         run: |
           echo "Checking if metrics-server already exists..."
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-          
+
           # Check if metrics-server addon is already installed
           if kubectl get deployment metrics-server -n kube-system &> /dev/null; then
             echo "✅ Metrics-server already installed as EKS addon"
@@ -219,7 +219,16 @@ jobs:
           kubectl apply -f k8s/20-telegram-bot.yaml
           kubectl apply -f k8s/30-ingress.yaml
           kubectl apply -f k8s/40-autoscaling.yaml
-          kubectl apply -f k8s/50-monitoring.yaml
+          
+          # Apply monitoring only if ServiceMonitor CRD exists (Prometheus installed)
+          if kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
+            echo "✅ ServiceMonitor CRD found, applying monitoring..."
+            kubectl apply -f k8s/50-monitoring.yaml
+          else
+            echo "⚠️  ServiceMonitor CRD not found, skipping monitoring setup"
+            echo "   You can apply it later once Prometheus is fully installed:"
+            echo "   kubectl apply -f k8s/50-monitoring.yaml"
+          fi
 
           echo "✅ Manifests applied"
 
