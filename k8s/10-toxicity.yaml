@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toxicity-svc
+  namespace: telegram
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: toxicity-svc } }
+  template:
+    metadata:
+      labels: { app: toxicity-svc }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: app
+          image: 898919247265.dkr.ecr.us-east-2.amazonaws.com/toxicity-svc:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "500m", memory: "1.5Gi" }
+            limits: { cpu: "1000m", memory: "2Gi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: toxicity-svc
+  namespace: telegram
+  labels:
+    app: toxicity-svc
+spec:
+  selector: { app: toxicity-svc }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: toxicity-pdb
+  namespace: telegram
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: toxicity-svc

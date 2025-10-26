@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-bot-svc
+  namespace: telegram
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: telegram-bot-svc } }
+  template:
+    metadata:
+      labels: { app: telegram-bot-svc }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: app
+          image: 898919247265.dkr.ecr.us-east-2.amazonaws.com/telegram-bot-svc:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: TIMEOUT
+              value: "5"
+            - name: BOT_TOKEN
+              valueFrom: { secretKeyRef: { name: bot-secret, key: BOT_TOKEN } }
+            - name: MOD_CHAT_ID
+              valueFrom:
+                { secretKeyRef: { name: bot-secret, key: MOD_CHAT_ID } }
+            - name: TOXICITY_URL
+              valueFrom:
+                { configMapKeyRef: { name: app-config, key: TOXICITY_URL } }
+            - name: TOX_THRESHOLD
+              valueFrom:
+                { configMapKeyRef: { name: app-config, key: TOX_THRESHOLD } }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "300m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telegram-bot-svc
+  namespace: telegram
+  labels:
+    app: telegram-bot-svc
+spec:
+  selector: { app: telegram-bot-svc }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: telegram-bot-pdb
+  namespace: telegram
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: telegram-bot-svc

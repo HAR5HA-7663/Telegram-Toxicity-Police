@@ -1,0 +1,272 @@
+name: build-deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: # Allow manual triggers
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  ACCOUNT_ID: 898919247265
+  CLUSTER_NAME: tg-moderator
+  ECR_TOXICITY_REPO: toxicity-svc
+  ECR_BOT_REPO: telegram-bot-svc
+
+jobs:
+  setup-infrastructure:
+    runs-on: ubuntu-latest
+    outputs:
+      cluster-exists: ${{ steps.check-cluster.outputs.exists }}
+      ecr-exists: ${{ steps.check-ecr.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.ACCOUNT_ID }}:role/GitHubOIDCDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check if EKS cluster exists
+        id: check-cluster
+        run: |
+          if aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ EKS cluster exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "❌ EKS cluster does not exist"
+          fi
+
+      - name: Check if ECR repositories exist
+        id: check-ecr
+        run: |
+          if aws ecr describe-repositories --repository-names ${{ env.ECR_TOXICITY_REPO }} --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ ECR repositories exist"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "❌ ECR repositories do not exist"
+          fi
+
+      - name: Create ECR repositories if needed
+        if: steps.check-ecr.outputs.exists == 'false'
+        run: |
+          echo "Creating ECR repositories..."
+          aws ecr create-repository --repository-name ${{ env.ECR_TOXICITY_REPO }} --region ${{ env.AWS_REGION }} || true
+          aws ecr create-repository --repository-name ${{ env.ECR_BOT_REPO }} --region ${{ env.AWS_REGION }} || true
+          echo "✅ ECR repositories created"
+
+      - name: Install eksctl
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+          tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+
+      - name: Create EKS cluster if needed (Minimal for demo)
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Creating minimal EKS cluster for demo..."
+          eksctl create cluster \
+            --name ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --node-type t3.small \
+            --nodes 1 \
+            --nodes-min 1 \
+            --nodes-max 2 \
+            --managed \
+            --spot
+          echo "✅ EKS cluster created"
+
+      - name: Install metrics-server if needed
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Installing metrics-server for HPA..."
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          echo "✅ Metrics-server installed"
+
+      - name: Install Prometheus if needed
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Installing Prometheus for monitoring..."
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm install prometheus prometheus-community/kube-prometheus-stack \
+            -n monitoring \
+            --create-namespace \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+          echo "✅ Prometheus installed"
+
+      - name: Install AWS Load Balancer Controller if needed
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "Setting up AWS Load Balancer Controller..."
+
+          # Update kubeconfig
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+          # Download IAM policy
+          curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+          # Create IAM policy
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam-policy.json 2>/dev/null || echo "Policy already exists"
+
+          # Create service account
+          eksctl create iamserviceaccount \
+            --cluster=${{ env.CLUSTER_NAME }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::${{ env.ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy \
+            --override-existing-serviceaccounts \
+            --region=${{ env.AWS_REGION }} \
+            --approve
+
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+          # Install ALB controller
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller
+
+          echo "✅ AWS Load Balancer Controller installed"
+
+  build-and-push:
+    needs: setup-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.ACCOUNT_ID }}:role/GitHubOIDCDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push toxicity-svc
+        run: |
+          IMAGE=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TOXICITY_REPO }}:${{ github.sha }}
+          IMAGE_LATEST=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TOXICITY_REPO }}:latest
+
+          docker build -t $IMAGE services/toxicity-svc
+          docker tag $IMAGE $IMAGE_LATEST
+          docker push $IMAGE
+          docker push $IMAGE_LATEST
+
+          echo "toxicity_image=$IMAGE" >> $GITHUB_ENV
+
+      - name: Build & push telegram-bot-svc
+        run: |
+          IMAGE=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BOT_REPO }}:${{ github.sha }}
+          IMAGE_LATEST=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BOT_REPO }}:latest
+
+          docker build -t $IMAGE services/telegram-bot-svc
+          docker tag $IMAGE $IMAGE_LATEST
+          docker push $IMAGE
+          docker push $IMAGE_LATEST
+
+          echo "bot_image=$IMAGE" >> $GITHUB_ENV
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS creds (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.ACCOUNT_ID }}:role/GitHubOIDCDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          kubectl cluster-info
+
+      - name: Deploy to Kubernetes
+        run: |
+          echo "Applying Kubernetes manifests..."
+
+          # Apply in order
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-config-secrets.yaml
+          kubectl apply -f k8s/10-toxicity.yaml
+          kubectl apply -f k8s/20-telegram-bot.yaml
+          kubectl apply -f k8s/30-ingress.yaml
+          kubectl apply -f k8s/40-autoscaling.yaml
+          kubectl apply -f k8s/50-monitoring.yaml
+
+          echo "✅ Manifests applied"
+
+      - name: Update deployment images
+        run: |
+          echo "Updating deployments with new images..."
+
+          # Update toxicity service
+          kubectl set image deployment/toxicity-svc \
+            app=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TOXICITY_REPO }}:${{ github.sha }} \
+            -n telegram
+
+          # Update bot service
+          kubectl set image deployment/telegram-bot-svc \
+            app=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BOT_REPO }}:${{ github.sha }} \
+            -n telegram
+
+          echo "✅ Images updated"
+
+      - name: Wait for deployments to be ready
+        run: |
+          echo "Waiting for deployments to rollout..."
+
+          kubectl rollout status deployment/toxicity-svc -n telegram --timeout=5m
+          kubectl rollout status deployment/telegram-bot-svc -n telegram --timeout=5m
+
+          echo "✅ Deployments ready"
+
+      - name: Get service endpoints
+        run: |
+          echo "=== Deployment Status ==="
+          kubectl get pods -n telegram
+          kubectl get svc -n telegram
+          kubectl get ingress -n telegram
+
+          echo ""
+          echo "=== Load Balancer URL ==="
+          ALB_URL=$(kubectl get ingress telegram-ingress -n telegram -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending...")
+          if [ "$ALB_URL" != "Pending..." ]; then
+            echo "Webhook URL: http://$ALB_URL/webhook"
+            echo "Set your Telegram webhook to: http://$ALB_URL/webhook"
+          else
+            echo "Load balancer is being provisioned. Check back in 3-5 minutes:"
+            echo "  kubectl get ingress telegram-ingress -n telegram"
+          fi
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "Images:"
+          echo "  toxicity-svc: ${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TOXICITY_REPO }}:${{ github.sha }}"
+          echo "  telegram-bot-svc: ${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BOT_REPO }}:${{ github.sha }}"

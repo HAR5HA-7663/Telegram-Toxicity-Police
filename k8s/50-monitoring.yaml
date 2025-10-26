@@ -1,0 +1,32 @@
+# ServiceMonitor for Prometheus to scrape metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: telegram-bot-monitor
+  namespace: telegram
+  labels:
+    app: telegram-bot-svc
+spec:
+  selector:
+    matchLabels:
+      app: telegram-bot-svc
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: toxicity-monitor
+  namespace: telegram
+  labels:
+    app: toxicity-svc
+spec:
+  selector:
+    matchLabels:
+      app: toxicity-svc
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
