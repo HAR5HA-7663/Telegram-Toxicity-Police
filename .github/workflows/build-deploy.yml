@@ -100,7 +100,7 @@ jobs:
           fi
 
       - name: Install Prometheus if needed
-        continue-on-error: true  # Don't fail deployment if Prometheus times out
+        continue-on-error: true # Don't fail deployment if Prometheus times out
         timeout-minutes: 8
         run: |
           # Update kubeconfig to check Prometheus status
@@ -117,14 +117,14 @@ jobs:
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
-          
+
           # Install without waiting - let it complete in background
           helm install prometheus prometheus-community/kube-prometheus-stack \
             -n monitoring \
             --create-namespace \
             --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
             --timeout 15m &
-          
+
           echo "✅ Prometheus installation started in background"
           echo "   It will be ready in 5-10 minutes"
 
