@@ -100,30 +100,33 @@ jobs:
           fi
 
       - name: Install Prometheus if needed
+        continue-on-error: true  # Don't fail deployment if Prometheus times out
+        timeout-minutes: 8
         run: |
           # Update kubeconfig to check Prometheus status
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-          
+
           # Check if Prometheus is already installed
           if kubectl get namespace monitoring &> /dev/null && \
-             helm list -n monitoring | grep -q prometheus; then
+             helm list -n monitoring 2>/dev/null | grep -q prometheus; then
             echo "✅ Prometheus already installed"
-          else
-            echo "Installing Prometheus for monitoring..."
-            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-            helm repo update
-            helm install prometheus prometheus-community/kube-prometheus-stack \
-              -n monitoring \
-              --create-namespace \
-              --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-              --wait --timeout 5m
-            
-            echo "Waiting for Prometheus CRDs to be ready..."
-            kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com || true
-            sleep 10
-            echo "✅ Prometheus installed and CRDs ready"
+            exit 0
           fi
+
+          echo "Installing Prometheus for monitoring (background installation)..."
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          
+          # Install without waiting - let it complete in background
+          helm install prometheus prometheus-community/kube-prometheus-stack \
+            -n monitoring \
+            --create-namespace \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --timeout 15m &
+          
+          echo "✅ Prometheus installation started in background"
+          echo "   It will be ready in 5-10 minutes"
 
       - name: Install AWS Load Balancer Controller if needed
         if: steps.check-cluster.outputs.exists == 'false'
@@ -232,24 +235,26 @@ jobs:
           kubectl apply -f k8s/20-telegram-bot.yaml
           kubectl apply -f k8s/30-ingress.yaml
           kubectl apply -f k8s/40-autoscaling.yaml
-          
-          # Wait for ServiceMonitor CRD to be ready (retry up to 2 minutes)
+
+          # Wait for ServiceMonitor CRD to be ready (retry up to 3 minutes)
           echo "Checking for ServiceMonitor CRD..."
-          for i in {1..24}; do
+          for i in {1..36}; do
             if kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
               echo "✅ ServiceMonitor CRD found, applying monitoring..."
               kubectl apply -f k8s/50-monitoring.yaml
+              echo "✅ Monitoring manifests applied"
               break
             else
-              echo "⏳ Waiting for Prometheus CRDs (attempt $i/24)..."
+              echo "⏳ Waiting for Prometheus CRDs (attempt $i/36)..."
               sleep 5
             fi
           done
-          
+
           if ! kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
-            echo "❌ ServiceMonitor CRD not found after 2 minutes"
-            echo "   Manual step required: kubectl apply -f k8s/50-monitoring.yaml"
-            exit 1
+            echo "⚠️  ServiceMonitor CRD not ready yet - Prometheus still installing"
+            echo "   Core services will deploy anyway. Monitoring will be available later."
+            echo "   To apply monitoring manually once ready:"
+            echo "   kubectl apply -f k8s/50-monitoring.yaml"
           fi
 
           echo "✅ Manifests applied"
@@ -273,14 +278,14 @@ jobs:
       - name: Wait for deployments to be ready
         run: |
           echo "Waiting for deployments to rollout..."
-          
+
           # Check pod status first (with error handling)
           echo "=== Initial Pod Status ==="
           kubectl get pods -n telegram -o wide || echo "No pods found yet or namespace doesn't exist"
-          
+
           # Give pods a moment to be created
           sleep 5
-          
+
           # Wait for toxicity service
           echo ""
           echo "Waiting for toxicity-svc..."
@@ -291,7 +296,7 @@ jobs:
             kubectl get events -n telegram --sort-by='.lastTimestamp' | tail -20
             exit 1
           fi
-          
+
           # Wait for bot service
           echo ""
           echo "Waiting for telegram-bot-svc..."
