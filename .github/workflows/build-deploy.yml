@@ -259,6 +259,29 @@ jobs:
 
           echo "✅ Manifests applied"
 
+      - name: Cleanup old pods to free resources
+        run: |
+          echo "Cleaning up old replicasets to free node resources..."
+
+          # Delete old/pending pods for toxicity service
+          kubectl delete pods -n telegram -l app=toxicity-svc --field-selector status.phase=Pending --force --grace-period=0 || true
+          kubectl delete pods -n telegram -l app=toxicity-svc --field-selector status.phase=Failed --force --grace-period=0 || true
+
+          # Delete old/pending pods for bot service  
+          kubectl delete pods -n telegram -l app=telegram-bot-svc --field-selector status.phase=Pending --force --grace-period=0 || true
+          kubectl delete pods -n telegram -l app=telegram-bot-svc --field-selector status.phase=Failed --force --grace-period=0 || true
+
+          # Clean up old replicasets (keep only last 2)
+          kubectl delete replicaset -n telegram -l app=toxicity-svc \
+            $(kubectl get replicaset -n telegram -l app=toxicity-svc --sort-by=.metadata.creationTimestamp -o name | head -n -2 | xargs) 2>/dev/null || true
+          kubectl delete replicaset -n telegram -l app=telegram-bot-svc \
+            $(kubectl get replicaset -n telegram -l app=telegram-bot-svc --sort-by=.metadata.creationTimestamp -o name | head -n -2 | xargs) 2>/dev/null || true
+
+          echo "✅ Cleanup complete"
+
+          # Wait a moment for resources to be freed
+          sleep 10
+
       - name: Update deployment images
         run: |
           echo "Updating deployments with new images..."
