@@ -100,22 +100,30 @@ jobs:
           fi
 
       - name: Install Prometheus if needed
-        if: steps.check-cluster.outputs.exists == 'false'
         run: |
-          echo "Installing Prometheus for monitoring..."
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
-          helm install prometheus prometheus-community/kube-prometheus-stack \
-            -n monitoring \
-            --create-namespace \
-            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-            --wait --timeout 5m
+          # Update kubeconfig to check Prometheus status
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
           
-          echo "Waiting for Prometheus CRDs to be ready..."
-          kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com || true
-          sleep 10
-          echo "✅ Prometheus installed and CRDs ready"
+          # Check if Prometheus is already installed
+          if kubectl get namespace monitoring &> /dev/null && \
+             helm list -n monitoring | grep -q prometheus; then
+            echo "✅ Prometheus already installed"
+          else
+            echo "Installing Prometheus for monitoring..."
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            helm repo update
+            helm install prometheus prometheus-community/kube-prometheus-stack \
+              -n monitoring \
+              --create-namespace \
+              --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+              --wait --timeout 5m
+            
+            echo "Waiting for Prometheus CRDs to be ready..."
+            kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com || true
+            sleep 10
+            echo "✅ Prometheus installed and CRDs ready"
+          fi
 
       - name: Install AWS Load Balancer Controller if needed
         if: steps.check-cluster.outputs.exists == 'false'
