@@ -5,6 +5,8 @@ metadata:
   namespace: telegram
 spec:
   replicas: 2
+  strategy:
+    type: Recreate  # Kill old pods before creating new ones - prevents "too many pods"
   selector: { matchLabels: { app: telegram-bot-svc } }
   template:
     metadata:
@@ -63,14 +65,3 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: telegram-bot-pdb
-  namespace: telegram
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: telegram-bot-svc
