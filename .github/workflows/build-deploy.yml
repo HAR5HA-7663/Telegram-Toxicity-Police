@@ -109,8 +109,13 @@ jobs:
           helm install prometheus prometheus-community/kube-prometheus-stack \
             -n monitoring \
             --create-namespace \
-            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
-          echo "✅ Prometheus installed"
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --wait --timeout 5m
+          
+          echo "Waiting for Prometheus CRDs to be ready..."
+          kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com || true
+          sleep 10
+          echo "✅ Prometheus installed and CRDs ready"
 
       - name: Install AWS Load Balancer Controller if needed
         if: steps.check-cluster.outputs.exists == 'false'
@@ -220,14 +225,23 @@ jobs:
           kubectl apply -f k8s/30-ingress.yaml
           kubectl apply -f k8s/40-autoscaling.yaml
           
-          # Apply monitoring only if ServiceMonitor CRD exists (Prometheus installed)
-          if kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
-            echo "✅ ServiceMonitor CRD found, applying monitoring..."
-            kubectl apply -f k8s/50-monitoring.yaml
-          else
-            echo "⚠️  ServiceMonitor CRD not found, skipping monitoring setup"
-            echo "   You can apply it later once Prometheus is fully installed:"
-            echo "   kubectl apply -f k8s/50-monitoring.yaml"
+          # Wait for ServiceMonitor CRD to be ready (retry up to 2 minutes)
+          echo "Checking for ServiceMonitor CRD..."
+          for i in {1..24}; do
+            if kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
+              echo "✅ ServiceMonitor CRD found, applying monitoring..."
+              kubectl apply -f k8s/50-monitoring.yaml
+              break
+            else
+              echo "⏳ Waiting for Prometheus CRDs (attempt $i/24)..."
+              sleep 5
+            fi
+          done
+          
+          if ! kubectl get crd servicemonitors.monitoring.coreos.com &> /dev/null; then
+            echo "❌ ServiceMonitor CRD not found after 2 minutes"
+            echo "   Manual step required: kubectl apply -f k8s/50-monitoring.yaml"
+            exit 1
           fi
 
           echo "✅ Manifests applied"
@@ -251,9 +265,30 @@ jobs:
       - name: Wait for deployments to be ready
         run: |
           echo "Waiting for deployments to rollout..."
-
-          kubectl rollout status deployment/toxicity-svc -n telegram --timeout=5m
-          kubectl rollout status deployment/telegram-bot-svc -n telegram --timeout=5m
+          
+          # Check pod status first
+          echo "=== Initial Pod Status ==="
+          kubectl get pods -n telegram -o wide
+          
+          # Wait for toxicity service
+          echo ""
+          echo "Waiting for toxicity-svc..."
+          if ! kubectl rollout status deployment/toxicity-svc -n telegram --timeout=8m; then
+            echo "❌ toxicity-svc failed to deploy. Diagnostics:"
+            kubectl describe pods -n telegram -l app=toxicity-svc
+            kubectl logs -n telegram -l app=toxicity-svc --tail=50 || true
+            exit 1
+          fi
+          
+          # Wait for bot service
+          echo ""
+          echo "Waiting for telegram-bot-svc..."
+          if ! kubectl rollout status deployment/telegram-bot-svc -n telegram --timeout=8m; then
+            echo "❌ telegram-bot-svc failed to deploy. Diagnostics:"
+            kubectl describe pods -n telegram -l app=telegram-bot-svc
+            kubectl logs -n telegram -l app=telegram-bot-svc --tail=50 || true
+            exit 1
+          fi
 
           echo "✅ Deployments ready"
 
