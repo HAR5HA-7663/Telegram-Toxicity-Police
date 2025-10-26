@@ -266,17 +266,21 @@ jobs:
         run: |
           echo "Waiting for deployments to rollout..."
           
-          # Check pod status first
+          # Check pod status first (with error handling)
           echo "=== Initial Pod Status ==="
-          kubectl get pods -n telegram -o wide
+          kubectl get pods -n telegram -o wide || echo "No pods found yet or namespace doesn't exist"
+          
+          # Give pods a moment to be created
+          sleep 5
           
           # Wait for toxicity service
           echo ""
           echo "Waiting for toxicity-svc..."
           if ! kubectl rollout status deployment/toxicity-svc -n telegram --timeout=8m; then
             echo "❌ toxicity-svc failed to deploy. Diagnostics:"
-            kubectl describe pods -n telegram -l app=toxicity-svc
+            kubectl describe pods -n telegram -l app=toxicity-svc || true
             kubectl logs -n telegram -l app=toxicity-svc --tail=50 || true
+            kubectl get events -n telegram --sort-by='.lastTimestamp' | tail -20
             exit 1
           fi
           
@@ -285,8 +289,9 @@ jobs:
           echo "Waiting for telegram-bot-svc..."
           if ! kubectl rollout status deployment/telegram-bot-svc -n telegram --timeout=8m; then
             echo "❌ telegram-bot-svc failed to deploy. Diagnostics:"
-            kubectl describe pods -n telegram -l app=telegram-bot-svc
+            kubectl describe pods -n telegram -l app=telegram-bot-svc || true
             kubectl logs -n telegram -l app=telegram-bot-svc --tail=50 || true
+            kubectl get events -n telegram --sort-by='.lastTimestamp' | tail -20
             exit 1
           fi
 
