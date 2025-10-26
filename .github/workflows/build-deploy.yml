@@ -87,10 +87,17 @@ jobs:
       - name: Install metrics-server if needed
         if: steps.check-cluster.outputs.exists == 'false'
         run: |
-          echo "Installing metrics-server for HPA..."
+          echo "Checking if metrics-server already exists..."
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-          echo "✅ Metrics-server installed"
+          
+          # Check if metrics-server addon is already installed
+          if kubectl get deployment metrics-server -n kube-system &> /dev/null; then
+            echo "✅ Metrics-server already installed as EKS addon"
+          else
+            echo "Installing metrics-server for HPA..."
+            kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+            echo "✅ Metrics-server installed"
+          fi
 
       - name: Install Prometheus if needed
         if: steps.check-cluster.outputs.exists == 'false'
