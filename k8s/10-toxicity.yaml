@@ -6,7 +6,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate  # Kill old pod before creating new one - prevents "too many pods"
+    type: Recreate # Kill old pod before creating new one - prevents "too many pods"
   selector: { matchLabels: { app: toxicity-svc } }
   template:
     metadata:
