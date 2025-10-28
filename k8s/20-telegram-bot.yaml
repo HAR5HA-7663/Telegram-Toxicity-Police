@@ -4,7 +4,7 @@ metadata:
   name: telegram-bot-svc
   namespace: telegram
 spec:
-  replicas: 1  # Reduced from 2 to fit on t3.small node (11 pod limit)
+  replicas: 1 # Reduced from 2 to fit on t3.small node (11 pod limit)
   strategy:
     type: Recreate # Kill old pods before creating new ones - prevents "too many pods"
   selector: { matchLabels: { app: telegram-bot-svc } }

@@ -168,6 +168,101 @@ jobs:
 
           echo "✅ AWS Load Balancer Controller installed"
 
+      - name: Grant kubectl access to IAM user
+        run: |
+          echo "🔐 Granting kubectl access to IAM user HAR5HA..."
+
+          # Update kubeconfig
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+          # Install eksctl if not present
+          if ! command -v eksctl &> /dev/null; then
+            curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+            tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+            sudo mv /tmp/eksctl /usr/local/bin
+          fi
+
+          # Create access entry for IAM user (EKS 1.32+ API-based auth)
+          eksctl create accessentry \
+            --cluster ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --principal-arn arn:aws:iam::${{ env.ACCOUNT_ID }}:user/HAR5HA \
+            --type STANDARD \
+            --username HAR5HA 2>/dev/null || echo "Access entry already exists"
+
+          # Associate cluster admin policy
+          eksctl associate accesspolicy \
+            --cluster ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --principal-arn arn:aws:iam::${{ env.ACCOUNT_ID }}:user/HAR5HA \
+            --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+            --access-scope type=cluster 2>/dev/null || echo "Policy already associated"
+
+          echo "✅ kubectl access granted to IAM user HAR5HA"
+
+      - name: Ensure AWS Load Balancer Controller is installed
+        run: |
+          echo "🔍 Checking AWS Load Balancer Controller status..."
+
+          # Update kubeconfig
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+          # Check if ALB controller exists
+          if kubectl get deployment aws-load-balancer-controller -n kube-system &> /dev/null; then
+            echo "✅ AWS Load Balancer Controller already installed"
+            kubectl get deployment aws-load-balancer-controller -n kube-system
+            exit 0
+          fi
+
+          echo "📦 Installing AWS Load Balancer Controller..."
+
+          # Download IAM policy
+          curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+          # Create IAM policy if doesn't exist
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam-policy.json 2>/dev/null || echo "IAM policy already exists"
+
+          # Install eksctl if not present
+          if ! command -v eksctl &> /dev/null; then
+            curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz"
+            tar -xzf eksctl_Linux_amd64.tar.gz -C /tmp
+            sudo mv /tmp/eksctl /usr/local/bin
+          fi
+
+          # Create OIDC provider if not exists
+          eksctl utils associate-iam-oidc-provider \
+            --cluster ${{ env.CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --approve 2>/dev/null || echo "OIDC provider already exists"
+
+          # Create service account
+          eksctl create iamserviceaccount \
+            --cluster=${{ env.CLUSTER_NAME }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::${{ env.ACCOUNT_ID }}:policy/AWSLoadBalancerControllerIAMPolicy \
+            --override-existing-serviceaccounts \
+            --region=${{ env.AWS_REGION }} \
+            --approve
+
+          # Install Helm if not present
+          if ! command -v helm &> /dev/null; then
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+          # Install ALB controller
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.CLUSTER_NAME }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller
+
+          echo "✅ AWS Load Balancer Controller installed"
+
   build-and-push:
     needs: setup-infrastructure
     runs-on: ubuntu-latest
