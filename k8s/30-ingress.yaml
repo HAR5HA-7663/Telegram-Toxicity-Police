@@ -7,9 +7,14 @@ metadata:
     kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS-1-2-2017-01
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-2:898919247265:certificate/ea1fc26c-c98f-40be-909f-d52a7468b9ac
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
 spec:
   rules:
-    - http:
+    - host: bot.har5ha.in
+      http:
         paths:
           - path: /webhook
             pathType: Prefix
