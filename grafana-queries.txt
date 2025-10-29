@@ -1,0 +1,96 @@
+# Grafana Dashboard Queries for Load Testing Demo
+# Access: http://localhost:3000 (admin / prom-operator)
+
+# Panel 1: Real-time Request Rate (RPS)
+# Type: Graph, Refresh: 5s, Time range: Last 15 minutes
+# Query:
+sum(rate(http_requests_total{job="telegram-bot-svc"}[30s]))
+
+# Panel 2: Request Rate by Status Code
+# Type: Graph (Stacked area), Show as lines
+# Query 1 (Success):
+sum(rate(http_requests_total{job="telegram-bot-svc",status="200"}[30s])) by (status)
+# Query 2 (Errors):
+sum(rate(http_requests_total{job="telegram-bot-svc",status=~"4..|5.."}[30s])) by (status)
+
+# Panel 3: Response Time Percentiles
+# Type: Graph, Unit: seconds
+# Query P50:
+histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job="telegram-bot-svc"}[1m])) by (le))
+# Query P95:
+histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="telegram-bot-svc"}[1m])) by (le))
+# Query P99:
+histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job="telegram-bot-svc"}[1m])) by (le))
+
+# Panel 4: Total Messages Processed
+# Type: Stat, Show trend, Unit: short
+# Query:
+sum(messages_processed_total{job="telegram-bot-svc"})
+
+# Panel 5: Toxic Message Rate
+# Type: Graph, Color: Red
+# Query:
+sum(rate(messages_processed_total{job="telegram-bot-svc",toxic="true"}[1m]))
+
+# Panel 6: Toxicity Service Latency
+# Type: Graph, Unit: seconds
+# Query:
+rate(toxicity_call_duration_seconds_sum{job="telegram-bot-svc"}[1m]) / rate(toxicity_call_duration_seconds_count{job="telegram-bot-svc"}[1m])
+
+# Panel 7: Error Rate (%)
+# Type: Stat, Thresholds: 0-5 (green), 5-10 (yellow), >10 (red)
+# Query:
+(sum(rate(http_requests_total{job="telegram-bot-svc",status=~"5.."}[1m])) / sum(rate(http_requests_total{job="telegram-bot-svc"}[1m]))) * 100
+
+# Panel 8: Circuit Breaker State
+# Type: Stat, Mapping: 0=Closed (green), 1=Open (red)
+# Query:
+max(circuit_breaker_open{job="telegram-bot-svc"})
+
+# Panel 9: Active Pods
+# Type: Stat
+# Query:
+count(up{job="telegram-bot-svc"} == 1)
+
+# Panel 10: CPU Usage
+# Type: Graph
+# Query:
+sum(rate(container_cpu_usage_seconds_total{namespace="telegram"}[1m])) by (pod)
+
+# Panel 11: Memory Usage
+# Type: Graph, Unit: bytes
+# Query:
+sum(container_memory_working_set_bytes{namespace="telegram"}) by (pod)
+
+# Panel 12: Request Heatmap (Advanced)
+# Type: Heatmap
+# Query:
+sum(increase(http_request_duration_seconds_bucket{job="telegram-bot-svc"}[1m])) by (le)
+
+
+# ============================================
+# QUICK SETUP: Import JSON Dashboard
+# ============================================
+# 1. Start port-forward (if not running):
+#    kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# 2. Go to http://localhost:3000
+# 3. Login: admin / prom-operator
+# 4. Click "+" → "Import" (left sidebar)
+# 5. Click "Upload JSON file" → Select grafana-dashboard.json
+#    OR paste contents of grafana-dashboard.json
+# 6. Select "Prometheus" as data source
+# 7. Click "Import"
+
+# Dashboard includes 10 panels:
+# - RPS (large stat with thresholds)
+# - Total messages processed
+# - Response time percentiles (P50, P95, P99)
+# - Error rate %
+# - Circuit breaker state (OPEN/CLOSED)
+# - Request rate by status code (stacked)
+# - Toxic message detection rate
+# - Toxicity service latency
+# - Active bot pods count
+# - Memory usage by pod
+
+# NOTE: The dashboard JSON is in grafana-dashboard.json file

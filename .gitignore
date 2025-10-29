@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.mp4
+*.pdf
+*.docx
+*.xlsx
 .Python
 env/
 venv/
@@ -53,6 +57,9 @@ docker-compose.override.yml
 
 # MacOS
 .DS_Store
+
+# Ignore k8s secrets file containing BOT_TOKEN and MOD_CHAT_ID
+D:\Desktop\telegram-toxicity\k8s\01-config-secrets.yaml
 .AppleDouble
 .LSOverride
 

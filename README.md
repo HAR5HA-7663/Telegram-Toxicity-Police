@@ -62,15 +62,22 @@ telegram-toxicity/
 │  ├─ 20-telegram-bot.yaml   # Deployment + Service + PDB
 │  ├─ 30-ingress.yaml        # ALB Ingress
 │  ├─ 40-autoscaling.yaml    # HPA with multi-metric
-│  └─ 50-monitoring.yaml     # ServiceMonitors
+ │  ├─ 45-pod-disruption-budget.yaml # PodDisruptionBudget for both services
+ │  └─ 50-monitoring.yaml     # ServiceMonitors
 ├─ scripts/                  # Deployment automation
 │  ├─ build-push-ecr.ps1
 │  ├─ create-eks-cluster.ps1
 │  ├─ deploy-k8s.ps1
-│  └─ setup-webhook.ps1
+│  ├─ setup-webhook.ps1
+│  ├─ scale-up-loadtest.ps1    # scale nodes + replicas for load testing
+│  └─ scale-down.ps1          # scale cluster back down after testing
 ├─ .github/workflows/
 │  └─ build-deploy.yml       # Automated CI/CD
 ├─ deploy-complete.ps1       # Full deployment script
+├─ load-test.js              # k6 full load test (500 avg, 1500 peak)
+├─ load-test-light.js        # k6 light test for small clusters (30-50 RPS)
+├─ grafana-dashboard.json    # Prebuilt Grafana dashboard to import
+├─ grafana-queries.txt       # Prometheus queries for dashboard panels
 └─ README.md                 # This file
 ```
 
@@ -385,6 +392,66 @@ Set the webhook (replace with your values):
 4. Send a toxic message in the monitored group
 5. You should receive an alert in your moderator chat
 
+## 🖥️ Demo & Logs (recommended terminal commands)
+
+Use the following terminals during your demo to monitor behavior, autoscaling, and logs.
+
+Terminal 1 - Watch pods (real-time):
+
+```powershell
+kubectl get pods -n telegram -w
+```
+
+Terminal 2 - Bot logs (follow, increase concurrency if needed):
+
+```powershell
+# If you have many pods, increase max log requests or follow one pod
+kubectl logs -n telegram -l app=telegram-bot-svc -f --tail=20 --max-log-requests=10
+# Or follow a single pod:
+kubectl logs -n telegram <telegram-bot-pod-name> -f --tail=50
+```
+
+Terminal 3 - Toxicity service logs:
+
+```powershell
+kubectl logs -n telegram -l app=toxicity-svc -f --tail=20
+```
+
+Terminal 4 - Run load test (in another window):
+
+```powershell
+# Full load test (requires scale-up)
+k6 run load-test.js
+# Light test (for single-node/demo)
+k6 run load-test-light.js
+```
+
+Terminal 5 - HPA status (watch autoscaling):
+
+```powershell
+kubectl get hpa -n telegram -w
+```
+
+Notes:
+
+- If you prefer colored, multi-pod logs, install `stern` and run `stern telegram-bot-svc -n telegram --tail 50`.
+- When following many pods you may need `--max-log-requests` to increase concurrency.
+
+## 🔬 Health & Debug
+
+To check service health directly (bypass ingress), port-forward the service and open `/healthz` in your browser:
+
+```powershell
+kubectl port-forward svc/telegram-bot-svc 8080:80 -n telegram
+# Then open: http://localhost:8080/healthz
+```
+
+To view the webhook info from Telegram:
+
+```powershell
+curl https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo
+```
+
 ## 🧪 Testing
 
 ### Test toxicity service locally:
@@ -568,10 +635,6 @@ eksctl delete cluster --name tg-moderator --region us-west-2
 aws ecr delete-repository --repository-name toxicity-svc --force
 aws ecr delete-repository --repository-name telegram-bot-svc --force
 ```
-
-## 📝 License
-
-MIT
 
 ## 🤝 Contributing
 
